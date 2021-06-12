@@ -38,7 +38,8 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
         );
 
     wire      sram_writing;
-    wire[7:0] sram_addr;
+    reg [7:0] r_addr = 8'b0;
+    reg [7:0] w_addr = 8'b0;
     wire[7:0] sram_w_data;
     wire[7:0] sram_r_data;
 
@@ -46,23 +47,24 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
         .clock(CLK100MHZ),
         .reset(btn[0]),
         .write(sram_writing),
-        .addr(sram_addr),
+        .r_addr(r_addr),
+        .w_addr(w_addr),
         .in (sram_w_data),
         .out(sram_r_data)
         );
 
-    reg [7:0] r_addr = 8'b0;
-    reg [7:0] w_addr = 8'b0;
 
     // -----------------------------------------------------
     // make a state machene
 
-    reg[7:0] data;
+    reg[7:0] data_recv = 8'b0;
     reg data_saved;
     wire has_data = (~uart_receiving) && uart_recv_okay;
 
-    assign sram_w_data    = data;
-    assign uart_send_data = data;
+    assign sram_w_data    = uart_recv_data; // uartからの入力を直で繋ぐ
+    assign uart_send_data = sram_r_data;    // SRAMからの出力を直で繋ぐ
+
+    // 書き込みタイミングはhas_data/data_savedフラグで制御する
 
     parameter IDLE_STATE = 0;
     parameter SAVE_STATE = 1; // receive data and save it to sram
@@ -73,7 +75,6 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
 
     assign uart_send_enable = state == SEND_STATE;
     assign sram_writing = (state == SAVE_STATE);
-    assign sram_addr = (state == SAVE_STATE) ? w_addr : /* send or wait */r_addr;
 
     function [1:0] next_state(
         input[1:0] state,
@@ -116,11 +117,8 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
     always @(posedge CLK100MHZ) begin
         if (btn[0]) begin
             state      <= IDLE_STATE;
-            data       <= 8'b0;
+            data_recv  <= 8'b0;
             data_saved <= 1'b0;
-
-//             sram_w_data <= 8'b0;
-//             sram_r_data <= 8'b0;
 
             w_addr <= 8'b0;
             r_addr <= 8'b0;
@@ -131,9 +129,9 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
 
             // update data to write
             if (uart_recv_okay) begin
-                data <= uart_recv_data;
+                data_recv <= uart_recv_data;
             end else begin
-                data <= 8'b0;
+                data_recv <= 8'b0;
             end
 
             // update data save flag
@@ -148,7 +146,6 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
             end else if (state == SAVE_STATE) begin
                 w_addr <= w_addr + 1;
             end else if (state == SEND_STATE) begin
-                data   <= sram_r_data;
                 if (~uart_sending) begin
                     r_addr <= r_addr + 1;
                 end
@@ -159,26 +156,29 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
     end
 endmodule
 
-module sram(clock, reset, write, addr, in, out);
+module sram(clock, reset, write, r_addr, w_addr, in, out);
 
     input  wire      clock;
     input  wire      reset;
     input  wire      write;
-    input  wire[7:0] addr;
+    input  wire[7:0] r_addr;
+    input  wire[7:0] w_addr;
     input  wire[7:0] in;
-    output reg[7:0]  out;
+    output wire[7:0] out;
 
-    reg [7:0] data[0:255];
+    reg [7:0] mem[0:255];
+
+    assign out = mem[r_addr];
 
     integer i;
     always @(posedge clock) begin
         if (reset) begin
             for (i=0; i<256; i=i+1)
-                data[i] <= 0;
-        end else if (write) begin
-            data[addr] <= in;
+                mem[i] <= 0;
         end else begin
-            out <= data[addr];
+            if (write) begin
+                mem[w_addr] <= in;
+            end
         end
     end
 endmodule
