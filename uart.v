@@ -62,7 +62,7 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
     wire has_data = (~uart_receiving) && uart_recv_okay;
 
     assign sram_w_data    = uart_recv_data; // uartからの入力を直で繋ぐ
-    assign uart_send_data = sram_r_data;    // SRAMからの出力を直で繋ぐ
+    assign uart_send_data = (state == SEND_STATE) ? sram_r_data : data_recv;
 
     // 書き込みタイミングはhas_data/data_savedフラグで制御する
 
@@ -73,7 +73,7 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
     reg [1:0]   state = IDLE_STATE;
     wire[1:0] w_state;
 
-    assign uart_send_enable = state == SEND_STATE;
+    assign uart_send_enable = (state == SEND_STATE) || (state == SAVE_STATE);
     assign sram_writing = (state == SAVE_STATE);
 
     function [1:0] next_state(
