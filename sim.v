@@ -83,11 +83,11 @@ module sim();
         UART_IN = 1'b0; # 17360
         UART_IN = 1'b1; # 17360
         UART_IN = 1'b1; # 17360
-        UART_IN = 1'b0; # 17360
-        UART_IN = 1'b0; # 17360
+        UART_IN = 1'b1; # 17360
         UART_IN = 1'b1; # 17360
         UART_IN = 1'b0; # 17360
-        UART_IN = 1'b1; # 17360
+        UART_IN = 1'b0; # 17360
+        UART_IN = 1'b0; # 17360
         UART_IN = 1'b0; # 17360
         UART_IN = 1'b1;
     end
