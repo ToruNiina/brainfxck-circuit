@@ -1,3 +1,3 @@
 # BrainFxck
 
-hardware BrainFxck emulator
+hardware BrainFxck interpreter
