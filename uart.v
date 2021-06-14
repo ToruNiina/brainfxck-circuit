@@ -53,6 +53,9 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
         .out(sram_r_data)
         );
 
+    wire[7:0] bf_output_data;
+    wire      bf_output_flag;
+
     brainfuck bf(
         .clock(CLK100MHZ),
         .reset(btn[0]),
@@ -60,8 +63,8 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
         .inst_data(sram_r_data),
         .inst_len(sram_w_addr),
         .inst_addr(sram_r_addr),
-        .out_flag(uart_send_enable),
-        .out_data(uart_send_data),
+        .out_flag(bf_output_flag),
+        .out_data(bf_output_data),
         .out_busy(uart_sending)
         );
 
@@ -73,15 +76,16 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
     wire has_data = (~uart_receiving) && uart_recv_okay;
 
     assign sram_w_data    = uart_recv_data;
-//     assign uart_send_data = (~out_busy) && data_recv;
 
     parameter IDLE_STATE = 0;
     parameter SAVE_STATE = 1; // receive data and save it to sram
     reg    state = IDLE_STATE;
     wire w_state;
 
-//     assign uart_send_enable = (state == SAVE_STATE);
     assign sram_writing     = (state == SAVE_STATE);
+
+    assign uart_send_data   = bf_output_flag ? bf_output_data : data_recv;
+    assign uart_send_enable = (~uart_sending) && ((state == SAVE_STATE) ^ bf_output_flag);
 
     function [0:0] next_state(
         input[0:0] state,
@@ -179,8 +183,9 @@ module brainfuck(clock, reset, run, inst_data, inst_len, inst_addr, out_flag, ou
 
     reg[1:0] state = IDLE_STATE;
     function [1:0] next_state(
-        input state,
-        input run,
+        input[1:0] state,
+        input      run,
+        input      out_busy,
         input[7:0] inst_len,
         input[7:0] inst_addr
         );
@@ -199,7 +204,7 @@ module brainfuck(clock, reset, run, inst_data, inst_len, inst_addr, out_flag, ou
             end else begin
                 next_state = EXEC_STATE;
             end
-        end else if (state == WAIT_STATE) begin
+        end else begin // WAIT_STATE
             if (out_busy) begin
                 next_state = WAIT_STATE;
             end else begin
@@ -208,7 +213,7 @@ module brainfuck(clock, reset, run, inst_data, inst_len, inst_addr, out_flag, ou
         end
     endfunction
     wire[1:0] w_state;
-    assign w_state = next_state(state, run, inst_len, inst_ptr);
+    assign w_state = next_state(state, run, out_busy, inst_len, inst_ptr);
 
     // +-----+------+-------------------------------------+
     // |inst |ascii |expr                                 |
