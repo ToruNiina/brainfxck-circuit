@@ -38,8 +38,8 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
         );
 
     wire      sram_writing;
-    reg [7:0] r_addr = 8'b0;
-    reg [7:0] w_addr = 8'b0;
+    wire[7:0] sram_r_addr;
+    reg [7:0] sram_w_addr = 8'b0;
     wire[7:0] sram_w_data;
     wire[7:0] sram_r_data;
 
@@ -47,12 +47,23 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
         .clock(CLK100MHZ),
         .reset(btn[0]),
         .write(sram_writing),
-        .r_addr(r_addr),
-        .w_addr(w_addr),
+        .r_addr(sram_r_addr),
+        .w_addr(sram_w_addr),
         .in (sram_w_data),
         .out(sram_r_data)
         );
 
+    brainfuck bf(
+        .clock(CLK100MHZ),
+        .reset(btn[0]),
+        .run(btn[1]),
+        .inst_data(sram_r_data),
+        .inst_len(sram_w_addr),
+        .inst_addr(sram_r_addr),
+        .out_flag(uart_send_enable),
+        .out_data(uart_send_data),
+        .out_busy(uart_sending)
+        );
 
     // -----------------------------------------------------
     // make a state machene
@@ -61,67 +72,42 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
     reg data_saved;
     wire has_data = (~uart_receiving) && uart_recv_okay;
 
-    assign sram_w_data    = uart_recv_data; // uartからの入力を直で繋ぐ
-    assign uart_send_data = (state == SEND_STATE) ? sram_r_data : data_recv;
-
-    // 書き込みタイミングはhas_data/data_savedフラグで制御する
+    assign sram_w_data    = uart_recv_data;
+//     assign uart_send_data = (~out_busy) && data_recv;
 
     parameter IDLE_STATE = 0;
     parameter SAVE_STATE = 1; // receive data and save it to sram
-    parameter SEND_STATE = 2; // start sending the data
-    parameter WAIT_STATE = 3; // wait until the whole data is sent
-    reg [1:0]   state = IDLE_STATE;
-    wire[1:0] w_state;
+    reg    state = IDLE_STATE;
+    wire w_state;
 
-    assign uart_send_enable = (state == SEND_STATE) || (state == SAVE_STATE);
-    assign sram_writing = (state == SAVE_STATE);
+//     assign uart_send_enable = (state == SAVE_STATE);
+    assign sram_writing     = (state == SAVE_STATE);
 
-    function [1:0] next_state(
-        input[1:0] state,
-        input      uart_sending,
+    function [0:0] next_state(
+        input[0:0] state,
         input      has_data,
-        input      data_saved,
-        input[3:0] button,
-        input[7:0] raddr,
-        input[7:0] waddr
+        input      data_saved
         );
         if (state == IDLE_STATE) begin
             if (has_data && (~data_saved)) begin
                 next_state = SAVE_STATE;
-            end else if (button[1] && raddr != waddr) begin
-                next_state = SEND_STATE;
             end else begin
                 next_state = IDLE_STATE;
             end
-        end else if (state == SAVE_STATE) begin
+        end else begin // SAVE_STATE
             next_state = IDLE_STATE;
-        end else if (state == SEND_STATE) begin
-            if (raddr == waddr) begin
-                next_state = IDLE_STATE;
-            end else if (uart_sending) begin
-                next_state = WAIT_STATE;
-            end else begin
-                next_state = SEND_STATE;
-            end
-        end else /*if (state == WAIT_STATE)*/ begin
-            if (uart_sending) begin
-                next_state = WAIT_STATE;
-            end else begin
-                next_state = SEND_STATE;
-            end
         end
     endfunction
 
-    assign w_state = next_state(state, uart_sending, has_data, data_saved, btn, r_addr, w_addr);
+    assign w_state = next_state(state, has_data, data_saved);
 
     always @(posedge CLK100MHZ) begin
         if (btn[0]) begin
-            state      <= IDLE_STATE;
-            data_recv  <= 8'b0;
-            data_saved <= 1'b0;
 
-            w_addr <= 8'b0;
-            r_addr <= 8'b0;
+            state       <= IDLE_STATE;
+            data_recv   <= 8'b0;
+            data_saved  <= 1'b0;
+            sram_w_addr <= 8'b0;
 
         end else begin
 
@@ -141,16 +127,216 @@ module top(CLK100MHZ, btn, uart_txd_in, uart_rxd_out, led0, led1);
                 data_saved <= 1'b1;
             end
 
-            if(state == IDLE_STATE) begin
-                ; // do nothing
-            end else if (state == SAVE_STATE) begin
-                w_addr <= w_addr + 1;
-            end else if (state == SEND_STATE) begin
-                if (~uart_sending) begin
-                    r_addr <= r_addr + 1;
+            if (state == SAVE_STATE) begin
+                sram_w_addr <= sram_w_addr + 1;
+            end
+        end
+    end
+endmodule
+
+module brainfuck(clock, reset, run, inst_data, inst_len, inst_addr, out_flag, out_data, out_busy);
+
+    input  wire      clock;
+    input  wire      reset;
+    input  wire      run;
+    input  wire[7:0] inst_data;
+    input  wire[7:0] inst_len;
+    output wire[7:0] inst_addr;
+    output wire      out_flag;
+    output wire[7:0] out_data;
+    input  wire      out_busy;
+
+    // ----------------------------------------------------------------------
+
+    reg [7:0] inst_ptr = 8'b0;
+    assign inst_addr = inst_ptr;
+
+    // ----------------------------------------------------------------------
+    // data memory
+
+    reg [7:0] data_ptr = 8'b0;
+    wire[7:0] w_data;
+    wire[7:0] r_data;
+    wire write_data;
+
+    sram data_mem(
+        .clock(clock),
+        .reset(reset),
+        .write(write_data),
+        .r_addr(data_ptr),
+        .w_addr(data_ptr),
+        .in (w_data),
+        .out(r_data)
+        );
+
+    assign out_data = r_data; // connect pointed byte to uart_out
+
+    // ----------------------------------------------------------------------
+
+    parameter IDLE_STATE = 0; // doing nothing
+    parameter EXEC_STATE = 1; // executing bf
+    parameter WAIT_STATE = 2; // waiting UART
+
+    reg[1:0] state = IDLE_STATE;
+    function [1:0] next_state(
+        input state,
+        input run,
+        input[7:0] inst_len,
+        input[7:0] inst_addr
+        );
+
+        if (state == IDLE_STATE) begin
+            if (run && (inst_len != inst_addr)) begin
+                next_state = EXEC_STATE;
+            end else begin
+                next_state = IDLE_STATE;
+            end
+        end else if (state == EXEC_STATE) begin
+            if (inst_len == inst_addr) begin
+                next_state = IDLE_STATE;
+            end else if (out_busy) begin // wait until UART sends current byte
+                next_state = WAIT_STATE;
+            end else begin
+                next_state = EXEC_STATE;
+            end
+        end else if (state == WAIT_STATE) begin
+            if (out_busy) begin
+                next_state = WAIT_STATE;
+            end else begin
+                next_state = EXEC_STATE;
+            end
+        end
+    endfunction
+    wire[1:0] w_state;
+    assign w_state = next_state(state, run, inst_len, inst_ptr);
+
+    // +-----+------+-------------------------------------+
+    // |inst |ascii |expr                                 |
+    // +-----+------+-------------------------------------+
+    // |  >  | 0x3E | increment data ptr                  |
+    // |  <  | 0x3C | decrement data ptr                  |
+    // |  +  | 0x2B | increment data pointed by data ptr  |
+    // |  -  | 0x2D | decrement data pointed by data ptr  |
+    // |  .  | 0x2E | output a byte                       |
+    // |  ,  | 0x2C | input a byte (is not supported)     |
+    // |  [  | 0x5B | jump to `]` if data is zero         |
+    // |  ]  | 0x5D | jump to `[` if data is not zero     |
+    // +-----+------+-------------------------------------+
+    //
+    // loop:           [>>+<<-]
+    // case skip: dep= 11111110
+    // case loop: dep= 0000000F
+    // case exit: dep= 00000000
+
+    reg [8:0] nest_depth = 9'b0; // to find the corresponding `[` and `]`
+    wire[8:0] w_nest_depth;
+
+    wire executing;
+    assign executing = (nest_depth == 0) && (state == EXEC_STATE) && (inst_ptr != inst_len);
+
+    function [8:0] next_nest_depth(
+        input       executing, // forward == 1, backward == 0
+        input [7:0] inst_data,
+        input [7:0] r_data,
+        input [8:0] nest_depth
+        );
+
+        if (executing) begin
+            if (inst_data == 8'h5B) begin // `[`
+                if (r_data == 8'b0) begin // jump to the corresponding `]`
+                    next_nest_depth = nest_depth + 1;
+                end else begin
+                    next_nest_depth = nest_depth; // execute the loop body
                 end
-            end else if (state == WAIT_STATE) begin
-                ; // do nothing
+            end else if (inst_data == 8'h5D) begin // `]`
+                if (r_data == 8'h0) begin
+                    next_nest_depth = nest_depth; // go through
+                end else begin // jump to the corresponding `[`
+                    next_nest_depth = nest_depth - 1;
+                end
+            end else begin
+                next_nest_depth = nest_depth;
+            end
+        end else begin
+            if (inst_data == 8'h5B) begin // [
+                next_nest_depth = nest_depth + 1;
+            end else if (inst_data == 8'h5D) begin
+                next_nest_depth = nest_depth - 1;
+            end else begin
+                next_nest_depth = nest_depth;
+            end
+        end
+    endfunction
+    assign w_nest_depth = next_nest_depth(executing, inst_data, r_data, nest_depth);
+
+    wire [7:0] w_inst_ptr;
+    assign w_inst_ptr = (inst_ptr == inst_len)    ? inst_ptr :
+                       ((w_nest_depth[8] == 1'b1) ? inst_ptr - 1 : inst_ptr + 1);
+
+    function [7:0] next_data_ptr(
+        input       executing,
+        input [7:0] inst_data,
+        input [7:0] data_ptr
+        );
+
+        if (executing) begin
+            if (inst_data == 8'h3E) begin // `>`
+                next_data_ptr = data_ptr + 1;
+            end else if (inst_data == 8'h3C) begin // `<`
+                next_data_ptr = data_ptr - 1;
+            end else begin
+                next_data_ptr = data_ptr;
+            end
+        end else begin
+            next_data_ptr = data_ptr;
+        end
+    endfunction
+    wire [7:0] w_data_ptr;
+    assign w_data_ptr = next_data_ptr(executing, inst_data, data_ptr);
+
+    function [7:0] next_w_data(
+        input       executing,
+        input [7:0] inst_data,
+        input [7:0] r_data
+        );
+
+        if (executing) begin
+            if (inst_data == 8'h2B) begin // `+`
+                next_w_data = r_data + 1;
+            end else if (inst_data == 8'h2D) begin // `-`
+                next_w_data = r_data - 1;
+            end else begin
+                next_w_data = r_data;
+            end
+        end else begin
+            next_w_data = r_data;
+        end
+    endfunction
+    assign w_data = next_w_data(executing, inst_data, r_data);
+
+    // write data memory when inst_data == `+` or `-`
+    assign write_data = executing && ((inst_data == 8'h2B) || (inst_data == 8'h2D));
+
+    // uart output when inst_data == `.`
+    assign out_flag = executing && (inst_data == 8'h2E);
+
+    always @(posedge clock) begin
+        if (reset) begin
+            state      <= IDLE_STATE;
+            nest_depth <= 0;
+            inst_ptr   <= 0;
+            data_ptr   <= 0;
+        end else begin
+            if (state == EXEC_STATE) begin
+                state      <= w_state;
+                nest_depth <= w_nest_depth;
+                inst_ptr   <= w_inst_ptr;
+                data_ptr   <= w_data_ptr;
+            end else begin // IDLE / WAIT
+                state      <= w_state   ;
+                nest_depth <= nest_depth; // these program
+                inst_ptr   <= inst_ptr  ; // states are
+                data_ptr   <= data_ptr  ; // kept intact
             end
         end
     end
